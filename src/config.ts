@@ -111,7 +111,7 @@ const envSchema = z.object({
   HOST: z.string().min(1).default('0.0.0.0'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   WORKER_ENABLED: booleanString.default(true),
-  WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(10),
+  WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(10),
   WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(1_000),
   LEASE_SECONDS: z.coerce.number().int().min(5).max(3_600).default(60),
   SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(300_000).default(15_000),

@@ -8,7 +8,7 @@ import { createLogger } from './logger.js';
 import { Metrics } from './metrics.js';
 import { createPrisma } from './prisma.js';
 import { RetentionJob } from './retention.js';
-import { installShutdown, type ShutdownStep } from './shutdown.js';
+import { closeHttpServer, installShutdown, type ShutdownStep } from './shutdown.js';
 
 function main(): void {
   let config;
@@ -49,17 +49,7 @@ function main(): void {
   retention.start();
 
   const steps: ShutdownStep[] = [
-    {
-      name: 'http-server',
-      run: () =>
-        new Promise<void>((resolve) => {
-          server.close(() => {
-            resolve();
-          });
-          // Keep-alive sockets would otherwise hold close() open until they time out.
-          server.closeIdleConnections();
-        }),
-    },
+    { name: 'http-server', run: (graceMs) => closeHttpServer(server, graceMs) },
   ];
   if (worker !== undefined) {
     steps.push({ name: 'worker', run: (graceMs) => worker.stop(graceMs) });

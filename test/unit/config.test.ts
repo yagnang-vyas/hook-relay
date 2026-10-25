@@ -172,6 +172,16 @@ describe('parseEnv', () => {
     });
   });
 
+  it('bounds the worker batch size and validates the schema name', () => {
+    expect(problems(() => parseEnv({ ...valid, WORKER_BATCH_SIZE: '101' }))).toContain(
+      'WORKER_BATCH_SIZE',
+    );
+    expect(problems(() => parseEnv({ ...valid, DATABASE_SCHEMA: 'bad schema; drop' }))).toContain(
+      'DATABASE_SCHEMA',
+    );
+    expect(parseEnv({ ...valid, DATABASE_SCHEMA: 'hook_relay' }).databaseSchema).toBe('hook_relay');
+  });
+
   it('parses overrides', () => {
     expect(parseEnv({ ...valid, WORKER_ENABLED: 'false', PORT: '8080' })).toMatchObject({
       workerEnabled: false,

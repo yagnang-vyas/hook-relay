@@ -5,6 +5,7 @@ import type { Db } from '../prisma.js';
 import {
   claimDue,
   completeAttempt,
+  type AttemptRecord,
   type ClaimedDelivery,
   type Completion,
 } from '../store/deliveries.js';
@@ -26,6 +27,10 @@ export interface WorkerDeps {
 
 /** Default time between expired-lease sweeps, independent of the polling interval. */
 const DEFAULT_LEASE_SWEEP_INTERVAL_MS = 5_000;
+
+/** Attempts at writing a delivery outcome before giving up and leaving it to lease recovery. */
+const RECORD_TRIES = 3;
+const RECORD_RETRY_DELAY_MS = 100;
 
 export class Worker {
   private readonly deps: WorkerDeps;
@@ -123,7 +128,23 @@ export class Worker {
     }
   }
 
+  /**
+   * Handles one claimed delivery. A failure here (for example the database becoming unavailable
+   * while loading the body or recording the result) must not affect sibling deliveries or the
+   * loop: the delivery simply stays `in_flight` and is recovered when its lease expires.
+   */
   private async process(claim: ClaimedDelivery): Promise<void> {
+    try {
+      await this.attempt(claim);
+    } catch (err) {
+      this.deps.logger.error(
+        { err, deliveryId: claim.id, targetId: claim.targetId, attempt: claim.attempts },
+        'delivery processing failed; the lease will expire and the delivery will be recovered',
+      );
+    }
+  }
+
+  private async attempt(claim: ClaimedDelivery): Promise<void> {
     const { db, config, forwarder, logger, metrics } = this.deps;
     const startedAt = new Date();
     const started = process.hrtime.bigint();
@@ -162,8 +183,7 @@ export class Worker {
     const statusCode = 'statusCode' in outcome && outcome.statusCode ? outcome.statusCode : null;
     const error = outcome.kind === 'delivered' ? null : outcome.error;
 
-    const applied = await completeAttempt(
-      db,
+    const applied = await this.record(
       claim,
       { startedAt, durationMs: elapsedMs(), statusCode, error },
       completion,
@@ -189,6 +209,29 @@ export class Worker {
       },
       applied ? 'delivery attempt finished' : 'delivery attempt result discarded: lease was lost',
     );
+  }
+
+  /**
+   * Records an outcome, retrying briefly on database errors. The request has already been made,
+   * so losing the result would cause a duplicate delivery once the lease expires.
+   */
+  private async record(
+    claim: ClaimedDelivery,
+    attempt: AttemptRecord,
+    completion: Completion,
+  ): Promise<boolean> {
+    for (let tries = 1; ; tries++) {
+      try {
+        return await completeAttempt(this.deps.db, claim, attempt, completion);
+      } catch (err) {
+        if (tries >= RECORD_TRIES) throw err;
+        this.deps.logger.warn(
+          { err, deliveryId: claim.id, tries },
+          'recording delivery outcome failed; retrying',
+        );
+        await new Promise((resolve) => setTimeout(resolve, RECORD_RETRY_DELAY_MS * tries));
+      }
+    }
   }
 
   private decide(

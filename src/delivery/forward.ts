@@ -66,6 +66,27 @@ export function describeError(err: unknown): string {
   return 'unknown error';
 }
 
+/** Rejects with the signal's reason as soon as it aborts; otherwise settles like `promise`. */
+export function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abortReason = (): Error => {
+      const reason: unknown = signal.reason;
+      return reason instanceof Error ? reason : new Error(String(reason));
+    };
+    if (signal.aborted) {
+      reject(abortReason());
+      return;
+    }
+    const onAbort = (): void => {
+      reject(abortReason());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
+}
+
 /** Discards an unread response body. A failure here must not change the delivery outcome. */
 export async function releaseBody(response: {
   body: { cancel(): Promise<void> } | null;
@@ -90,16 +111,19 @@ export function createForwarder(options: ForwarderOptions): Forwarder {
       const { target } = request;
       try {
         const url = new URL(target.url);
-        await assertSafeTarget(url, policy, options.resolver);
-
         const signals = [AbortSignal.timeout(target.timeoutMs)];
         if (request.signal !== undefined) signals.push(request.signal);
+        const signal = AbortSignal.any(signals);
+
+        // The whole attempt, including name resolution, must fit in the timeout so that it
+        // always finishes inside the delivery's lease.
+        await raceAbort(assertSafeTarget(url, policy, options.resolver), signal);
 
         const response = await fetch(url, {
           method: 'POST',
           dispatcher: agent,
           redirect: 'manual',
-          signal: AbortSignal.any(signals),
+          signal,
           headers: {
             'content-type': request.contentType ?? 'application/octet-stream',
             'user-agent': USER_AGENT,

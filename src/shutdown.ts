@@ -1,3 +1,4 @@
+import type { Server } from 'node:http';
 import type { Logger } from './logger.js';
 
 export interface ShutdownStep {
@@ -74,4 +75,23 @@ export function installShutdown(options: ShutdownOptions): ShutdownHandle {
     });
   }
   return { shutdown };
+}
+
+/**
+ * Stops accepting connections and resolves once existing requests have finished. Connections
+ * still open when the grace period ends (slow clients, stuck keep-alives) are destroyed so a
+ * single slow client cannot hold the process up.
+ */
+export function closeHttpServer(server: Server, graceMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      server.closeAllConnections();
+    }, graceMs);
+    server.close(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+    // Idle keep-alive sockets would otherwise hold close() open until they time out.
+    server.closeIdleConnections();
+  });
 }

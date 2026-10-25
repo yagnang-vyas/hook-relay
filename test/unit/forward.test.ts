@@ -6,6 +6,7 @@ import {
   createForwarder,
   describeError,
   relaySignature,
+  raceAbort,
   releaseBody,
   type ForwardRequest,
   type Forwarder,
@@ -218,6 +219,60 @@ describe('forward', () => {
     } finally {
       await rebinding.close();
     }
+  });
+});
+
+describe('name resolution is bounded by the timeout', () => {
+  it('times out a hung DNS lookup as retryable before any request is made', async () => {
+    const hung = createForwarder({
+      network: { allowPrivateTargets: new Set(), allowHttp: true },
+      relaySigningSecret: SECRET,
+      resolver: () => new Promise(() => undefined),
+    });
+    try {
+      const req = request();
+      req.target = { ...req.target, url: 'http://hooks.example.com/hook', timeoutMs: 150 };
+      const started = Date.now();
+      const outcome = await hung.forward(req);
+      expect(outcome).toEqual({ kind: 'retryable', error: 'request timed out' });
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(target.requests).toHaveLength(0);
+    } finally {
+      await hung.close();
+    }
+  });
+
+  it('is interrupted by the caller abort signal during resolution', async () => {
+    const hung = createForwarder({
+      network: { allowPrivateTargets: new Set(), allowHttp: true },
+      relaySigningSecret: SECRET,
+      resolver: () => new Promise(() => undefined),
+    });
+    try {
+      const controller = new AbortController();
+      const req = request({ signal: controller.signal });
+      req.target = { ...req.target, url: 'http://hooks.example.com/hook' };
+      setTimeout(() => controller.abort(), 50);
+      expect(await hung.forward(req)).toEqual({ kind: 'retryable', error: 'request aborted' });
+    } finally {
+      await hung.close();
+    }
+  });
+});
+
+describe('raceAbort', () => {
+  it('settles like the promise when the signal never fires', async () => {
+    const signal = new AbortController().signal;
+    await expect(raceAbort(Promise.resolve(7), signal)).resolves.toBe(7);
+    await expect(raceAbort(Promise.reject(new Error('nope')), signal)).rejects.toThrow('nope');
+  });
+
+  it('rejects immediately for an already aborted signal', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('already'));
+    await expect(raceAbort(new Promise(() => undefined), controller.signal)).rejects.toThrow(
+      'already',
+    );
   });
 });
 

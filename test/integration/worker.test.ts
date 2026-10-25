@@ -421,6 +421,100 @@ describe('lease recovery', () => {
   });
 });
 
+describe('failures while processing', () => {
+  it('leaves the delivery in flight, logs it, and does not disturb siblings', async () => {
+    await seedEvent(t.db, { deliveryId: 'f1' });
+    await seedEvent(t.db, { deliveryId: 'f2' });
+    let calls = 0;
+    const flaky = t.db.$extends({
+      query: {
+        event: {
+          findUnique({ args, query }) {
+            if (calls++ === 0)
+              return Promise.reject(new Error('simulated outage while loading the body'));
+            return query(args);
+          },
+        },
+      },
+    });
+    const ctx = createTestWorker(
+      { db: flaky as unknown as typeof t.db },
+      { ordersUrl: `${target.url}/hook` },
+    );
+    contexts.push(ctx);
+
+    expect(await ctx.worker.runOnce()).toBe(2);
+
+    const rows = await t.db.delivery.findMany({ orderBy: { id: 'asc' } });
+    expect(rows.map((r) => r.status).sort()).toEqual(['delivered', 'in_flight']);
+    expect(ctx.logs.output()).toContain('delivery processing failed');
+    expect(target.requests).toHaveLength(1);
+
+    // The stuck delivery is picked up once its lease expires.
+    await t.pool.query(
+      `UPDATE deliveries SET lease_until = now() - interval '1 second' WHERE status = 'in_flight'`,
+    );
+    await ctx.worker.runOnce();
+    expect((await t.db.delivery.findMany()).every((d) => d.status === 'delivered')).toBe(true);
+  });
+
+  it('stop() does not reject when a delivery failed', async () => {
+    await seedEvent(t.db);
+    const broken = t.db.$extends({
+      query: { event: { findUnique: () => Promise.reject(new Error('always down')) } },
+    });
+    const ctx = createTestWorker(
+      { db: broken as unknown as typeof t.db },
+      { ordersUrl: `${target.url}/hook` },
+    );
+    contexts.push(ctx);
+    ctx.worker.start();
+    await expectEventually(() => ctx.logs.output().includes('delivery processing failed'));
+    await expect(ctx.worker.stop(1_000)).resolves.toBeUndefined();
+  });
+});
+
+describe('recording outcomes', () => {
+  it('retries a transient database error so a delivered request is not repeated', async () => {
+    await seedEvent(t.db);
+    let calls = 0;
+    const flaky = t.db.$extends({
+      query: {
+        attempt: {
+          createMany({ args, query }) {
+            if (calls++ === 0) return Promise.reject(new Error('transient failure'));
+            return query(args);
+          },
+        },
+      },
+    });
+    const ctx = createTestWorker(
+      { db: flaky as unknown as typeof t.db },
+      { ordersUrl: `${target.url}/hook` },
+    );
+    contexts.push(ctx);
+    await ctx.worker.runOnce();
+    expect(await delivery()).toMatchObject({ status: 'delivered', attempts: 1 });
+    expect(target.requests).toHaveLength(1);
+    expect(ctx.logs.output()).toContain('recording delivery outcome failed; retrying');
+  });
+
+  it('gives up after repeated failures and leaves the delivery to lease recovery', async () => {
+    await seedEvent(t.db);
+    const broken = t.db.$extends({
+      query: { attempt: { createMany: () => Promise.reject(new Error('database is down')) } },
+    });
+    const ctx = createTestWorker(
+      { db: broken as unknown as typeof t.db },
+      { ordersUrl: `${target.url}/hook` },
+    );
+    contexts.push(ctx);
+    await ctx.worker.runOnce();
+    expect((await delivery()).status).toBe('in_flight');
+    expect(ctx.logs.output()).toContain('delivery processing failed');
+  });
+});
+
 describe('worker loop', () => {
   it('drains a backlog larger than one batch without idling between batches', async () => {
     for (let i = 0; i < 5; i++) await seedEvent(t.db);

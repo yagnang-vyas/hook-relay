@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
-import { installShutdown, type ShutdownStep } from '../../src/shutdown.js';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { connect } from 'node:net';
+import { closeHttpServer, installShutdown, type ShutdownStep } from '../../src/shutdown.js';
 import { captureLogger } from '../helpers.js';
 
 function setup(
@@ -125,5 +128,43 @@ describe('installShutdown', () => {
     expect(calls).toEqual(['ran']);
     expect(exits).toEqual([0]);
     expect(emitter.listenerCount('SIGINT')).toBe(1);
+  });
+});
+
+describe('closeHttpServer', () => {
+  async function listen(handler?: Parameters<typeof createServer>[1]) {
+    const server = createServer(handler);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return { server, port: (server.address() as AddressInfo).port };
+  }
+
+  it('resolves promptly when nothing is connected', async () => {
+    const { server } = await listen();
+    await closeHttpServer(server, 5_000);
+    expect(server.listening).toBe(false);
+  });
+
+  it('lets an in-flight request finish before closing', async () => {
+    const { server, port } = await listen((_req, res) => {
+      setTimeout(() => res.end('done'), 150);
+    });
+    const response = fetch(`http://127.0.0.1:${port}/`).then((r) => r.text());
+    await new Promise((r) => setTimeout(r, 50));
+    await closeHttpServer(server, 5_000);
+    expect(await response).toBe('done');
+  });
+
+  it('destroys connections that outlive the grace period', async () => {
+    const { server, port } = await listen(() => undefined);
+    const socket = connect(port, '127.0.0.1');
+    await new Promise<void>((resolve) => socket.once('connect', resolve));
+    // A request that never completes: the server cannot close gracefully.
+    socket.write('POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc');
+    await new Promise((r) => setTimeout(r, 50));
+    const started = Date.now();
+    await closeHttpServer(server, 100);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(server.listening).toBe(false);
+    socket.destroy();
   });
 });
