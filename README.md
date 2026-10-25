@@ -242,6 +242,9 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H 'Content-Type: appl
 - Metrics are per-process JSON counters, not a Prometheus endpoint, and reset on restart.
 - Request bodies are limited by `maxBodyBytes` (at most 25 MiB) and compressed request bodies are
   rejected.
+- A worker finishes its whole batch before claiming more, so one slow target can delay other
+  deliveries in the same batch by up to its timeout; lower `timeoutMs` or run more workers.
+- No rate limiting or brute-force protection on `/hooks/*` or `/api/*`; use a reverse proxy.
 - Targets are fixed in the config file; changing them needs a restart.
 - Forwarding does not copy provider headers (only the content type and `X-HookRelay-*`).
 - The WHATWG "bad ports" list applies to targets (for example 6000 and 6667 cannot be used).

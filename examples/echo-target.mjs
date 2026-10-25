@@ -12,6 +12,11 @@ export function createEchoServer({ secret, failFirst = 0, log = console.log } = 
   let requests = 0;
 
   return createServer((req, res) => {
+    // Container healthcheck: answer without logging so it does not look like a rejected webhook.
+    if (req.method === 'GET') {
+      res.writeHead(200).end('ok');
+      return;
+    }
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {

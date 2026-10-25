@@ -44,6 +44,12 @@ describe('examples/echo-target.mjs', () => {
     expect(logs[1]).toContain('already handled');
   });
 
+  it('answers GET health probes without logging them', async () => {
+    const { url, logs } = await start();
+    expect((await fetch(url)).status).toBe(200);
+    expect(logs).toEqual([]);
+  });
+
   it('rejects a bad signature', async () => {
     const { url } = await start();
     expect((await send(url, '{}', 'evt-2', 'sha256=deadbeef')).status).toBe(401);

@@ -191,3 +191,19 @@ justification. The most conservative reading was taken in each case.
 - **Documentation tests.** `openapi.yaml` is validated, every registered Express route must be
   documented (and vice versa), and a contract test validates real responses against the response
   schemas, so the spec cannot drift.
+
+### Self-review hardening
+
+Found in the final review and fixed:
+
+- **Per-delivery failures are contained.** An exception while loading a body or recording an outcome
+  is logged and leaves that delivery `in_flight` to be recovered by its lease; it no longer rejects
+  the batch or `Worker.stop()`. Recording an outcome is retried three times first, because the HTTP
+  request has already been made and a lost result becomes a duplicate delivery.
+- **Name resolution counts against the timeout.** DNS for the pre-flight SSRF check is raced against
+  the attempt's deadline, so a hung resolver cannot hold a delivery past its lease.
+- **Bounded HTTP shutdown.** After the grace period, connections still open (slow clients) are
+  destroyed so they cannot hold shutdown open.
+- **Worker batch size** is capped at 100 to stay within the connection pool.
+- **Head-of-line blocking** inside a batch is a known limitation (documented in the README): a
+  worker finishes its batch before claiming more.

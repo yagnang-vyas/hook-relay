@@ -32,6 +32,8 @@ services:
     image: hook-relay:local
     command: ['node', 'dist/migrate-cli.js']
     restart: 'no'
+    healthcheck:
+      disable: true
     environment:
       DATABASE_URL: postgresql://hookrelay:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/hookrelay
     depends_on:
@@ -71,6 +73,17 @@ services:
     environment:
       RELAY_SIGNING_SECRET: ${RELAY_SIGNING_SECRET:?set RELAY_SIGNING_SECRET in .env}
       ECHO_FAIL_FIRST: '1'
+    # Overrides the image's /healthz check: the echo service listens on 8080 and has no such route.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/').then(() => process.exit(0), () => process.exit(1))"
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     volumes:
       - ./examples/echo-target.mjs:/app/examples/echo-target.mjs:ro
     read_only: true

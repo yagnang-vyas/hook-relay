@@ -43,6 +43,8 @@ jobs:
         run: npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
       - run: npm run check
       - run: npm run test:integration
+      - name: Coverage thresholds
+        run: npm run test:coverage
 
   docker:
     runs-on: ubuntu-latest
