@@ -1,0 +1,41 @@
+{
+  "sources": [
+    {
+      "id": "github",
+      "secretEnv": "GITHUB_WEBHOOK_SECRET",
+      "scheme": { "type": "hmac-sha256", "header": "X-Hub-Signature-256", "format": "sha256=hex" },
+      "deliveryIdHeader": "X-GitHub-Delivery",
+      "targets": ["orders-service"]
+    },
+    {
+      "id": "payments",
+      "secretEnv": "PAYMENTS_WEBHOOK_SECRET",
+      "scheme": {
+        "type": "timestamped-hmac-sha256",
+        "header": "X-Signature",
+        "toleranceSeconds": 300
+      },
+      "deliveryIdHeader": "X-Event-Id",
+      "targets": ["billing-service"]
+    }
+  ],
+  "targets": [
+    {
+      "id": "orders-service",
+      "url": "http://orders:8080/webhooks",
+      "timeoutMs": 5000,
+      "maxAttempts": 8,
+      "backoff": { "baseMs": 2000, "maxMs": 3600000 }
+    },
+    {
+      "id": "billing-service",
+      "url": "http://billing:8080/webhooks",
+      "timeoutMs": 5000,
+      "maxAttempts": 8,
+      "backoff": { "baseMs": 2000, "maxMs": 3600000 }
+    }
+  ],
+  "network": { "allowPrivateTargets": ["orders", "billing"], "allowHttp": true },
+  "maxBodyBytes": 1048576,
+  "retentionDays": 14
+}

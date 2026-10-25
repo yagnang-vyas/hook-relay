@@ -1,0 +1,41 @@
+name: hook-relay
+
+services:
+  postgres:
+    image: postgres:16.11-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hookrelay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: hookrelay
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U hookrelay -d hookrelay']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://hookrelay:${POSTGRES_PASSWORD}@postgres:5432/hookrelay
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY in .env}
+      RELAY_SIGNING_SECRET: ${RELAY_SIGNING_SECRET:?set RELAY_SIGNING_SECRET in .env}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
+      PAYMENTS_WEBHOOK_SECRET: ${PAYMENTS_WEBHOOK_SECRET:?set PAYMENTS_WEBHOOK_SECRET in .env}
+      CONFIG_PATH: /etc/hookrelay/hookrelay.config.json
+    volumes:
+      - ./hookrelay.config.json:/etc/hookrelay/hookrelay.config.json:ro
+    ports:
+      - '3000:3000'
+
+volumes:
+  pgdata:

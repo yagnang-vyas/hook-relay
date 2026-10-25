@@ -1,0 +1,15 @@
+.git
+node_modules
+dist
+coverage
+src/generated
+.env
+.env.*
+!.env.example
+hookrelay.config.json
+test
+*.md
+!README.md
+.github
+Dockerfile
+compose.yaml
