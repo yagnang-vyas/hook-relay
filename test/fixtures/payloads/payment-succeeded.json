@@ -1,0 +1,5 @@
+{
+  "id": "evt_test_0001",
+  "type": "payment.succeeded",
+  "data": { "amount": 4999, "currency": "usd", "customer": "cus_test_0001" }
+}

@@ -1,0 +1,209 @@
+# HookRelay specification
+
+HookRelay is a self-hosted service that receives webhooks, verifies their signatures, stores them
+durably in PostgreSQL, forwards them to configured internal targets with retries, and lets
+operators inspect and replay them.
+
+## Goals
+
+- Never lose an accepted webhook because a downstream service is unavailable.
+- Reject forged or replayed requests before they reach storage.
+- Make every event and delivery attempt inspectable and replayable.
+- Be safe to run with several workers against one database.
+
+## Non-goals (v0.1.0)
+
+A web UI, payload transformation, multi-tenant auth, Redis or a message broker (PostgreSQL is the
+queue), provider-specific SDKs, and autoscaling guidance beyond "multiple workers are safe".
+
+## Delivery semantics
+
+HookRelay provides **at-least-once** delivery. A target may receive the same event more than once
+(for example when a worker crashes after the target responded but before the result was recorded,
+or after a manual replay). Targets must deduplicate on the `X-HookRelay-Event-Id` header.
+Ordering between events is not guaranteed.
+
+## Components
+
+| Area       | Module                                | Responsibility                                      |
+| ---------- | ------------------------------------- | --------------------------------------------------- |
+| Config     | `src/config.ts`                       | Validate environment and `hookrelay.config.json`    |
+| Signatures | `src/signatures/`                     | Pure verification of HMAC schemes over the raw body |
+| Ingest     | `src/routes/ingest.ts`                | `POST /hooks/:sourceId`                             |
+| Storage    | `src/store/`                          | Prisma access for events, deliveries and attempts   |
+| Delivery   | `src/delivery/`                       | Claiming, forwarding, backoff, SSRF guard, leases   |
+| Admin API  | `src/routes/admin.ts`                 | Inspection, replay, dead-letter handling            |
+| Operations | `src/retention.ts`, `src/shutdown.ts` | Body retention, graceful shutdown                   |
+
+The HTTP contract is described in `openapi.yaml`.
+
+## Decisions
+
+Decisions are recorded where the brief was ambiguous or where a library choice needed
+justification. The most conservative reading was taken in each case.
+
+### Tooling and versions
+
+- **Prisma 7.10.1, not the `latest` dist-tag.** At the time of writing, npm's `latest` tag for
+  `prisma` points at an 8.0 release candidate, so the newest stable 7.x release is pinned instead.
+  Prisma 7 requires a driver adapter (`@prisma/adapter-pg`), a `prisma.config.ts` that supplies the
+  datasource URL, and the new `prisma-client` generator, which writes the client into
+  `src/generated/prisma` (git-ignored, produced by `prisma generate`).
+- **TypeScript 6.0.3, not 7.x.** `typescript-eslint` 8.x declares a peer range of
+  `typescript <6.1.0`; type-aware linting is a requirement, so the newest compatible compiler is used.
+- **Express 5.** Async route handlers propagate rejections to the error handler without wrappers.
+- **Pinned versions.** Every dependency in `package.json` is an exact version.
+
+### Configuration
+
+- Configuration is validated with strict zod schemas: unknown keys are errors, so typos fail startup
+  instead of being silently ignored. All problems are reported together.
+- `ADMIN_API_KEY` and `RELAY_SIGNING_SECRET` must be at least 16 characters.
+- A target's `timeoutMs` must be at least 5 seconds shorter than `LEASE_SECONDS`, otherwise a healthy
+  in-flight request could outlive its lease and be delivered twice. Startup fails if it is not.
+- `network.allowPrivateTargets` entries are matched case-insensitively against the target hostname
+  (exact match, no wildcards).
+- Target URLs must not contain credentials.
+
+### Request handling
+
+- Every response from an error path uses `{ "error": { "code", "message", "requestId" } }`,
+  including 404s for unknown routes and body-parser failures.
+- An inbound `X-Request-Id` is only honoured if it matches `[A-Za-z0-9._-]{1,128}`; otherwise a UUID
+  is generated. This prevents log injection through the header.
+- Request logs record method, route template, status and duration only. Headers, query strings and
+  bodies are never logged. Logger redaction is configured as a second line of defence, and
+  database-client errors are reduced to their type and code because they can echo query arguments.
+- Readiness (`/readyz`) is true only if the database answers and every migration directory shipped
+  with the build is recorded as successfully applied in `_prisma_migrations`.
+- An in-process counter set exists (`invalid_signatures_total` and others). It is exposed through the
+  authenticated `GET /api/metrics` endpoint rather than a public, unauthenticated one.
+
+### Storage and ingestion
+
+- **Identifiers.** Events, deliveries and attempts use UUID v7 primary keys (time-ordered), generated by
+  the Prisma client. Admin list endpoints page by primary key, which is a stable total order.
+- **Delivery states.** `pending`, `in_flight`, `retrying`, `delivered`, `dead`. The brief's
+  `failed_permanent` is stored as `dead` with `dead_reason = 'permanent_status'`; exhausting retries
+  stores `dead_reason = 'max_attempts'`. One dead state keeps the dead-letter queue a single query.
+- **Retry budget.** `attempts` counts every attempt over the delivery's lifetime (it numbers attempts
+  and feeds `X-HookRelay-Attempt`). `attempts_base` records the count when the delivery last entered
+  the queue; the budget `maxAttempts` applies to `attempts - attempts_base`, so a manual retry of a
+  dead delivery receives a fresh budget without rewriting attempt history.
+- **Raw body.** Stored as `bytea`. `body_size` is kept separately so metadata survives retention.
+- **Duplicate detection** relies on the `(source_id, delivery_id)` unique constraint, not a prior
+  `SELECT`, so concurrent duplicates cannot both win. A duplicate leaves no rows behind because the
+  event insert fails before any delivery is created.
+- **Delivery IDs.** Accepted after signature verification only if they are 1-255 printable ASCII
+  characters without spaces; anything else is a 400 (`invalid_delivery_id`). A missing or blank
+  header causes a generated ID (`gen_<uuid>`) and `generated_id = true`; such events can never be
+  deduplicated, which is documented behaviour.
+- **Stored headers** are an allow-list (content type, user agent, a few provider event headers, and
+  the source's configured delivery ID header). The signature header and credentials are never stored.
+- **Content-Encoding.** Compressed request bodies are rejected with 415. Providers sign the bytes
+  they send; verifying a decompressed form would be guesswork.
+- **Unknown source** is answered with 404 before the body is read.
+- **401 responses** are deliberately generic (`Unauthorized`). The reason (missing header, malformed,
+  mismatch, stale timestamp) is logged and counted per source, never returned.
+- **Migrations.** `prisma/migrations` is generated by `prisma migrate dev`. The production image does
+  not ship the Prisma CLI, because its schema engine is a native binary that needs system libraries
+  (OpenSSL) missing from slim Node images. Instead `src/migrate.ts` applies the same SQL files and
+  records them in the same `_prisma_migrations` table (checksum-verified, one transaction per
+  migration, serialised by an advisory lock), so `prisma migrate deploy`/`status` remain valid on
+  the same database. CI runs `prisma migrate deploy` and `prisma migrate diff --exit-code` to prove
+  that the migrations and `schema.prisma` agree.
+- **Prisma client.** The generator output (`src/generated/prisma`) is git-ignored and produced by
+  `prisma generate` (`postinstall` and `npm run build`). Prisma shares the application's `pg` pool.
+
+### Delivery worker
+
+- **Claiming.** One statement (`UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED)`) moves due
+  deliveries to `in_flight`, sets `lease_until` and increments `attempts`, and commits before any
+  HTTP call. Incrementing at claim time means a worker that crashes mid-request still consumes an
+  attempt, so a delivery that kills its worker cannot loop forever.
+- **Fenced completion.** The outcome is applied with `WHERE status = 'in_flight' AND attempts = <claimed>`.
+  If the lease expired and the delivery was recovered or re-claimed, the stale result is discarded
+  (and logged) rather than overwriting the newer attempt. The attempt row is still written
+  (`ON CONFLICT DO NOTHING`) so the history shows what happened.
+- **Lease recovery** runs inside every worker (at most once per 5 seconds). Recovery counts as a used
+  attempt: if the budget is spent the delivery becomes `dead`, otherwise `retrying` and immediately
+  due. Deliveries for targets removed from the configuration become `dead` (`unknown_target`).
+- **Outcome classification.** 2xx delivers. 4xx other than 408 and 429 is permanent. Everything else
+  (3xx, 5xx, 408, 429, timeouts, network and DNS errors, SSRF rejections) is retried. Redirects are
+  never followed, so a 3xx is retried like any other unexpected status.
+- **Backoff.** Full jitter: a uniform delay in `[0, min(maxMs, baseMs * 2^(n-1))]` where `n` is the
+  attempt number within the current retry budget. Exponent growth is clamped so large attempt counts
+  cannot overflow.
+- **SSRF.** Targets come from configuration only. Before each request the hostname is resolved and
+  every address is classified; additionally the HTTP client's connector re-validates the address it
+  is about to dial, which closes the DNS-rebinding window between check and connect. Blocked:
+  unspecified and "this network", loopback, RFC 1918, link-local (including `169.254.169.254`),
+  CGNAT, benchmarking, documentation, multicast and reserved IPv4; and for IPv6 unspecified, loopback,
+  unique-local, link-local, site-local, multicast, documentation, discard, Teredo and IPv4-compatible
+  ranges. Addresses that embed IPv4 (IPv4-mapped, NAT64 and 6to4) are judged by the embedded address.
+  `allowPrivateTargets` exempts a hostname entirely, so list only hosts you control.
+- **HTTP client.** `undici` is used directly (not the global `fetch`) because only it lets us supply
+  the guarded connector. Following the WHATWG fetch rules it refuses a few "bad ports" (for example
+  6000 and 6667); such targets fail as retryable errors and end up dead-lettered.
+- **What is stored about an attempt:** status code, duration, and a short error string such as
+  `request timed out` or `network error: ECONNREFUSED`. Response bodies, URLs and exception messages
+  from the HTTP client are never stored.
+- **Forwarded request.** `POST` with the original bytes and content type (default
+  `application/octet-stream`), plus `X-HookRelay-Event-Id`, `X-HookRelay-Delivery-Id`,
+  `X-HookRelay-Attempt` (lifetime attempt number) and `X-HookRelay-Signature`
+  (`sha256=<hex HMAC of the body with RELAY_SIGNING_SECRET>`). Original provider headers are not
+  forwarded.
+- **Shutdown.** The worker stops claiming, waits up to the grace period for in-flight requests, then
+  aborts them; aborted requests are recorded as retryable failures.
+
+### Admin API and operations
+
+- **Authentication.** `Authorization: Bearer <ADMIN_API_KEY>` on everything under `/api`. Both sides are
+  hashed with SHA-256 before `timingSafeEqual`, so neither the comparison time nor the key length is
+  observable. Authentication runs before routing, so unauthenticated callers cannot probe which
+  `/api` paths exist. `GET /healthz`, `GET /readyz` and `POST /hooks/:sourceId` are the only
+  unauthenticated routes.
+- **Pagination.** Keyset on the UUID v7 primary key, newest first. Cursors are opaque base64url
+  wrappers around the last ID; malformed cursors are `400 invalid_cursor`. Limits are 1-200
+  (default 50).
+- **Event status filter.** Events have no status of their own; `status=` matches events with at
+  least one delivery in that state.
+- **Malformed IDs** in a path are answered with `404`, the same as an unknown ID.
+- **Body access.** The body is returned only with `includeBody=true`, as base64, and is fetched by a
+  separate query so ordinary reads never load payloads. A purged body is `null`.
+- **Replay** creates new `pending` deliveries and leaves history untouched. Allowed targets are the
+  source's currently configured targets (or, if the source was removed from the configuration, the
+  targets of the event's existing deliveries that are still configured). A replayed delivery carries a
+  new delivery ID but the same `X-HookRelay-Event-Id`. A replay of a purged event is `409`.
+- **Manual retry** moves a `dead` delivery to `pending` with a fresh retry budget (`attempts_base`
+  catches up with `attempts`). It is `409` unless the delivery is dead and its body still exists.
+  Row locks make concurrent retries safe: exactly one wins.
+- **Retention** runs at start and then hourly, in batches of 500 with `SKIP LOCKED`. It nulls the
+  body and sets `body_purged`, keeping all metadata, deliveries and attempts. It never purges an
+  event that still has a `pending`, `retrying` or `in_flight` delivery. Replay and retry hold a
+  `FOR SHARE` lock on the event row, which the purge skips, so a body cannot disappear underneath them.
+- **Graceful shutdown.** On SIGTERM/SIGINT: stop accepting connections, stop the worker claiming,
+  wait up to `SHUTDOWN_GRACE_MS` (default 15s) for in-flight requests, abort any that remain (they
+  are rescheduled as retryable failures), stop retention, close the HTTP client and database. A second
+  signal or a hung step forces exit with code 1. A hard crash is covered by lease recovery.
+- **Metrics.** `GET /api/metrics` exposes in-process counters as JSON. They reset on restart and are
+  per process; this is intentionally not a Prometheus endpoint (see Roadmap in the README).
+- **Documentation tests.** `openapi.yaml` is validated, every registered Express route must be
+  documented (and vice versa), and a contract test validates real responses against the response
+  schemas, so the spec cannot drift.
+
+### Self-review hardening
+
+Found in the final review and fixed:
+
+- **Per-delivery failures are contained.** An exception while loading a body or recording an outcome
+  is logged and leaves that delivery `in_flight` to be recovered by its lease; it no longer rejects
+  the batch or `Worker.stop()`. Recording an outcome is retried three times first, because the HTTP
+  request has already been made and a lost result becomes a duplicate delivery.
+- **Name resolution counts against the timeout.** DNS for the pre-flight SSRF check is raced against
+  the attempt's deadline, so a hung resolver cannot hold a delivery past its lease.
+- **Bounded HTTP shutdown.** After the grace period, connections still open (slow clients) are
+  destroyed so they cannot hold shutdown open.
+- **Worker batch size** is capped at 100 to stay within the connection pool.
+- **Head-of-line blocking** inside a batch is a known limitation (documented in the README): a
+  worker finishes its batch before claiming more.

@@ -1,0 +1,82 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum DeliveryStatus {
+  pending
+  in_flight
+  retrying
+  delivered
+  dead
+
+  @@map("delivery_status")
+}
+
+model Event {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  sourceId    String   @map("source_id")
+  deliveryId  String   @map("delivery_id")
+  generatedId Boolean  @default(false) @map("generated_id")
+  headers     Json
+  contentType String?  @map("content_type")
+  /// Raw request body; null once purged by the retention job.
+  body        Bytes?
+  bodySize    Int      @map("body_size")
+  bodyPurged  Boolean  @default(false) @map("body_purged")
+  receivedAt  DateTime @default(now()) @map("received_at") @db.Timestamptz(3)
+
+  deliveries Delivery[]
+
+  @@unique([sourceId, deliveryId])
+  @@index([receivedAt])
+  @@map("events")
+}
+
+model Delivery {
+  id            String         @id @default(uuid(7)) @db.Uuid
+  eventId       String         @map("event_id") @db.Uuid
+  targetId      String         @map("target_id")
+  status        DeliveryStatus @default(pending)
+  /// Lifetime number of attempts (used for numbering and X-HookRelay-Attempt).
+  attempts      Int            @default(0)
+  /// `attempts` at the moment the delivery last (re)entered the queue. The retry budget
+  /// (maxAttempts) applies to `attempts - attemptsBase`, so a manual retry gets a fresh budget.
+  attemptsBase  Int            @default(0) @map("attempts_base")
+  nextAttemptAt DateTime       @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+  leaseUntil    DateTime?      @map("lease_until") @db.Timestamptz(3)
+  lastStatus    Int?           @map("last_status")
+  lastError     String?        @map("last_error")
+  deadReason    String?        @map("dead_reason")
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deliveredAt   DateTime?      @map("delivered_at") @db.Timestamptz(3)
+
+  event      Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  attemptLog Attempt[]
+
+  @@index([status, nextAttemptAt])
+  @@index([eventId])
+  @@index([status, leaseUntil])
+  @@map("deliveries")
+}
+
+model Attempt {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  deliveryId    String   @map("delivery_id") @db.Uuid
+  attemptNumber Int      @map("attempt_number")
+  startedAt     DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  durationMs    Int      @map("duration_ms")
+  statusCode    Int?     @map("status_code")
+  error         String?
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@unique([deliveryId, attemptNumber])
+  @@map("attempts")
+}

@@ -1,0 +1,97 @@
+name: hook-relay
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://hookrelay:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/hookrelay
+  ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY in .env}
+  RELAY_SIGNING_SECRET: ${RELAY_SIGNING_SECRET:?set RELAY_SIGNING_SECRET in .env}
+  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
+  PAYMENTS_WEBHOOK_SECRET: ${PAYMENTS_WEBHOOK_SECRET:?set PAYMENTS_WEBHOOK_SECRET in .env}
+  CONFIG_PATH: /etc/hookrelay/hookrelay.config.json
+
+services:
+  postgres:
+    image: postgres:16.11-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hookrelay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: hookrelay
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U hookrelay -d hookrelay']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    build: .
+    image: hook-relay:local
+    command: ['node', 'dist/migrate-cli.js']
+    restart: 'no'
+    healthcheck:
+      disable: true
+    environment:
+      DATABASE_URL: postgresql://hookrelay:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/hookrelay
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+  app:
+    build: .
+    image: hook-relay:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *app-env
+    volumes:
+      - ./hookrelay.config.json:/etc/hookrelay/hookrelay.config.json:ro
+    ports:
+      - '127.0.0.1:3000:3000'
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+  # Optional demo downstream service: `docker compose --profile demo up`.
+  echo:
+    profiles: ['demo']
+    image: hook-relay:local
+    init: true
+    command: ['node', '/app/examples/echo-target.mjs']
+    environment:
+      RELAY_SIGNING_SECRET: ${RELAY_SIGNING_SECRET:?set RELAY_SIGNING_SECRET in .env}
+      ECHO_FAIL_FIRST: '1'
+    # Overrides the image's /healthz check: the echo service listens on 8080 and has no such route.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/').then(() => process.exit(0), () => process.exit(1))"
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    volumes:
+      - ./examples/echo-target.mjs:/app/examples/echo-target.mjs:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
