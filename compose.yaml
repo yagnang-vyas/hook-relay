@@ -93,5 +93,22 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Optional operations console and playground: `docker compose --profile ui up web`, then open
+  # http://127.0.0.1:5173. Same-origin nginx front for the admin API; the admin key is typed into
+  # the browser and never configured here.
+  web:
+    profiles: ['ui']
+    build: ./web
+    image: hook-relay-web:local
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - '127.0.0.1:5173:8080'
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
 volumes:
   pgdata:
