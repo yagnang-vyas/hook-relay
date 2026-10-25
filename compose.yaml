@@ -1,5 +1,13 @@
 name: hook-relay
 
+x-app-env: &app-env
+  DATABASE_URL: postgresql://hookrelay:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/hookrelay
+  ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY in .env}
+  RELAY_SIGNING_SECRET: ${RELAY_SIGNING_SECRET:?set RELAY_SIGNING_SECRET in .env}
+  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
+  PAYMENTS_WEBHOOK_SECRET: ${PAYMENTS_WEBHOOK_SECRET:?set PAYMENTS_WEBHOOK_SECRET in .env}
+  CONFIG_PATH: /etc/hookrelay/hookrelay.config.json
+
 services:
   postgres:
     image: postgres:16.11-alpine
@@ -19,23 +27,40 @@ services:
       retries: 10
       start_period: 10s
 
-  app:
+  migrate:
     build: .
-    restart: unless-stopped
+    image: hook-relay:local
+    command: ['node', 'dist/migrate-cli.js']
+    restart: 'no'
+    environment:
+      DATABASE_URL: postgresql://hookrelay:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/hookrelay
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://hookrelay:${POSTGRES_PASSWORD}@postgres:5432/hookrelay
-      ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY in .env}
-      RELAY_SIGNING_SECRET: ${RELAY_SIGNING_SECRET:?set RELAY_SIGNING_SECRET in .env}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
-      PAYMENTS_WEBHOOK_SECRET: ${PAYMENTS_WEBHOOK_SECRET:?set PAYMENTS_WEBHOOK_SECRET in .env}
-      CONFIG_PATH: /etc/hookrelay/hookrelay.config.json
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+  app:
+    build: .
+    image: hook-relay:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *app-env
     volumes:
       - ./hookrelay.config.json:/etc/hookrelay/hookrelay.config.json:ro
     ports:
-      - '3000:3000'
+      - '127.0.0.1:3000:3000'
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
 
 volumes:
   pgdata:

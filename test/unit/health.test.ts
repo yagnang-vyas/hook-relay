@@ -1,15 +1,16 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
-import type { Config } from '../../src/config.js';
 import type { Readiness } from '../../src/db.js';
 import { Metrics } from '../../src/metrics.js';
-import { captureLogger } from '../helpers.js';
+import type { Db } from '../../src/prisma.js';
+import { captureLogger, testConfig } from '../helpers.js';
 
 function makeApp(readiness: Readiness) {
   const captured = captureLogger();
   const app = createApp({
-    config: {} as Config,
+    config: testConfig(),
+    db: {} as Db,
     logger: captured.logger,
     metrics: new Metrics(),
     readiness,

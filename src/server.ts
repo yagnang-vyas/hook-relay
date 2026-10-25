@@ -3,6 +3,7 @@ import { loadConfig, ConfigError } from './config.js';
 import { createPool, createReadiness } from './db.js';
 import { createLogger } from './logger.js';
 import { Metrics } from './metrics.js';
+import { createPrisma } from './prisma.js';
 
 function main(): void {
   let config;
@@ -21,6 +22,7 @@ function main(): void {
     logger,
     metrics: new Metrics(),
     readiness: createReadiness(pool, config.env.migrationsDir),
+    db: createPrisma(pool),
   });
 
   app.listen(config.env.port, config.env.host, () => {
