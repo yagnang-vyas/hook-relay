@@ -249,6 +249,13 @@ docker compose --profile ui up --build web   # then open http://127.0.0.1:5173
 
 Enter your `ADMIN_API_KEY` on the Connection page; it stays in browser memory only.
 
+### Hosting the console on Netlify
+
+The repo root `netlify.toml` builds `web/` (Node 22, `dist`) with an SPA fallback. On Netlify the
+Playground works fully in the browser; the dashboard shows an unavailable state until a HookRelay is
+reachable. To connect one, uncomment the proxy rules in `netlify.toml` (the service sends no CORS
+headers, so the proxy keeps a single origin). The admin key is never baked into the bundle.
+
 ## Limitations
 
 - At-least-once only; there is no exactly-once mode and no ordering guarantee.
