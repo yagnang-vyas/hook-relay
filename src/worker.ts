@@ -18,8 +18,8 @@ function main(): void {
   }
 
   const logger = createLogger(config.env.logLevel);
-  const pool = createPool(config.env.databaseUrl);
-  const db = createPrisma(pool);
+  const pool = createPool(config.env.databaseUrl, config.env.databaseSchema);
+  const db = createPrisma(pool, config.env.databaseSchema);
   const forwarder = createForwarder({
     network: config.relay.network,
     relaySigningSecret: config.env.relaySigningSecret,

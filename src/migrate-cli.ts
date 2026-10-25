@@ -8,7 +8,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const dir = process.env['MIGRATIONS_DIR'] ?? 'prisma/migrations';
-  const pool = createPool(databaseUrl);
+  const pool = createPool(databaseUrl, process.env['DATABASE_SCHEMA']);
   try {
     const applied = await applyMigrations(pool, dir);
     process.stdout.write(

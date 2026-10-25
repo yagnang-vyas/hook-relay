@@ -7,6 +7,7 @@ import { Worker } from './delivery/worker.js';
 import { createLogger } from './logger.js';
 import { Metrics } from './metrics.js';
 import { createPrisma } from './prisma.js';
+import { RetentionJob } from './retention.js';
 import { installShutdown, type ShutdownStep } from './shutdown.js';
 
 function main(): void {
@@ -21,8 +22,8 @@ function main(): void {
 
   const logger = createLogger(config.env.logLevel);
   const metrics = new Metrics();
-  const pool = createPool(config.env.databaseUrl);
-  const db = createPrisma(pool);
+  const pool = createPool(config.env.databaseUrl, config.env.databaseSchema);
+  const db = createPrisma(pool, config.env.databaseSchema);
   const app = createApp({
     config,
     logger,
@@ -44,6 +45,9 @@ function main(): void {
     : undefined;
   worker?.start();
 
+  const retention = new RetentionJob(db, config.relay.retentionDays, logger);
+  retention.start();
+
   const steps: ShutdownStep[] = [
     {
       name: 'http-server',
@@ -61,6 +65,7 @@ function main(): void {
     steps.push({ name: 'worker', run: (graceMs) => worker.stop(graceMs) });
   }
   steps.push(
+    { name: 'retention', run: () => retention.stop() },
     { name: 'forwarder', run: () => forwarder.close() },
     { name: 'database', run: () => db.$disconnect() },
     { name: 'pool', run: () => pool.end() },

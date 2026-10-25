@@ -155,3 +155,39 @@ justification. The most conservative reading was taken in each case.
   forwarded.
 - **Shutdown.** The worker stops claiming, waits up to the grace period for in-flight requests, then
   aborts them; aborted requests are recorded as retryable failures.
+
+### Admin API and operations
+
+- **Authentication.** `Authorization: Bearer <ADMIN_API_KEY>` on everything under `/api`. Both sides are
+  hashed with SHA-256 before `timingSafeEqual`, so neither the comparison time nor the key length is
+  observable. Authentication runs before routing, so unauthenticated callers cannot probe which
+  `/api` paths exist. `GET /healthz`, `GET /readyz` and `POST /hooks/:sourceId` are the only
+  unauthenticated routes.
+- **Pagination.** Keyset on the UUID v7 primary key, newest first. Cursors are opaque base64url
+  wrappers around the last ID; malformed cursors are `400 invalid_cursor`. Limits are 1-200
+  (default 50).
+- **Event status filter.** Events have no status of their own; `status=` matches events with at
+  least one delivery in that state.
+- **Malformed IDs** in a path are answered with `404`, the same as an unknown ID.
+- **Body access.** The body is returned only with `includeBody=true`, as base64, and is fetched by a
+  separate query so ordinary reads never load payloads. A purged body is `null`.
+- **Replay** creates new `pending` deliveries and leaves history untouched. Allowed targets are the
+  source's currently configured targets (or, if the source was removed from the configuration, the
+  targets of the event's existing deliveries that are still configured). A replayed delivery carries a
+  new delivery ID but the same `X-HookRelay-Event-Id`. A replay of a purged event is `409`.
+- **Manual retry** moves a `dead` delivery to `pending` with a fresh retry budget (`attempts_base`
+  catches up with `attempts`). It is `409` unless the delivery is dead and its body still exists.
+  Row locks make concurrent retries safe: exactly one wins.
+- **Retention** runs at start and then hourly, in batches of 500 with `SKIP LOCKED`. It nulls the
+  body and sets `body_purged`, keeping all metadata, deliveries and attempts. It never purges an
+  event that still has a `pending`, `retrying` or `in_flight` delivery. Replay and retry hold a
+  `FOR SHARE` lock on the event row, which the purge skips, so a body cannot disappear underneath them.
+- **Graceful shutdown.** On SIGTERM/SIGINT: stop accepting connections, stop the worker claiming,
+  wait up to `SHUTDOWN_GRACE_MS` (default 15s) for in-flight requests, abort any that remain (they
+  are rescheduled as retryable failures), stop retention, close the HTTP client and database. A second
+  signal or a hung step forces exit with code 1. A hard crash is covered by lease recovery.
+- **Metrics.** `GET /api/metrics` exposes in-process counters as JSON. They reset on restart and are
+  per process; this is intentionally not a Prometheus endpoint (see Roadmap in the README).
+- **Documentation tests.** `openapi.yaml` is validated, every registered Express route must be
+  documented (and vice versa), and a contract test validates real responses against the response
+  schemas, so the spec cannot drift.

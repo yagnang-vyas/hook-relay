@@ -12,6 +12,8 @@ export interface ShutdownOptions {
   graceMs: number;
   /** Executed in order, so list "stop accepting work" steps before "release resources". */
   steps: ShutdownStep[];
+  /** Extra time beyond `graceMs` before the process is forcibly terminated (default 5s). */
+  forceExitSlackMs?: number;
   signals?: NodeJS.Signals[];
   /** Injectable for tests. */
   exit?: (code: number) => void;
@@ -43,10 +45,13 @@ export function installShutdown(options: ShutdownOptions): ShutdownHandle {
     logger.info({ reason, graceMs }, 'shutting down');
     const deadline = Date.now() + graceMs;
     // Backstop in case a step hangs past its budget.
-    const backstop = setTimeout(() => {
-      logger.error('shutdown did not finish in time; forcing exit');
-      exit(1);
-    }, graceMs + 5_000);
+    const backstop = setTimeout(
+      () => {
+        logger.error('shutdown did not finish in time; forcing exit');
+        exit(1);
+      },
+      graceMs + (options.forceExitSlackMs ?? 5_000),
+    );
     backstop.unref();
 
     let failed = false;

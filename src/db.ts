@@ -1,9 +1,10 @@
 import { readdirSync } from 'node:fs';
 import pg from 'pg';
 
-export function createPool(connectionString: string): pg.Pool {
+export function createPool(connectionString: string, schema?: string): pg.Pool {
   const pool = new pg.Pool({
     connectionString,
+    ...(schema !== undefined ? { options: `-c search_path=${schema}` } : {}),
     max: 20,
     connectionTimeoutMillis: 5_000,
     query_timeout: 30_000,

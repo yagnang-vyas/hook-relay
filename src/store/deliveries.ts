@@ -123,3 +123,59 @@ export async function completeAttempt(
     return updated === 1;
   });
 }
+
+export async function listDeadDeliveries(db: Db, limit: number, after: string | undefined) {
+  const rows = await db.delivery.findMany({
+    where: { status: 'dead', ...(after !== undefined ? { id: { lt: after } } : {}) },
+    orderBy: { id: 'desc' },
+    take: limit + 1,
+    select: {
+      id: true,
+      eventId: true,
+      targetId: true,
+      attempts: true,
+      lastStatus: true,
+      lastError: true,
+      deadReason: true,
+      createdAt: true,
+      updatedAt: true,
+      event: { select: { sourceId: true, deliveryId: true, bodyPurged: true } },
+    },
+  });
+  const page = rows.slice(0, limit);
+  const last = page.at(-1);
+  return { items: page, nextAfter: rows.length > limit && last !== undefined ? last.id : null };
+}
+
+export type RetryResult =
+  | { status: 'not_found' }
+  | { status: 'not_dead'; current: string }
+  | { status: 'body_purged' }
+  | { status: 'requeued' };
+
+/**
+ * Moves a dead delivery back to `pending` with a fresh retry budget (`attempts_base` catches up
+ * with `attempts`, so attempt numbering and history continue). The event row is locked
+ * `FOR SHARE` so the body cannot be purged while the delivery is being requeued.
+ */
+export async function retryDeadDelivery(db: Db, id: string): Promise<RetryResult> {
+  return db.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<{ status: string; has_body: boolean }[]>`
+      SELECT d.status::text AS status, e.body IS NOT NULL AS has_body
+      FROM deliveries d JOIN events e ON e.id = d.event_id
+      WHERE d.id = ${id}::uuid
+      FOR SHARE OF e FOR UPDATE OF d
+    `;
+    const row = rows[0];
+    if (row === undefined) return { status: 'not_found' } as const;
+    if (row.status !== 'dead') return { status: 'not_dead', current: row.status } as const;
+    if (!row.has_body) return { status: 'body_purged' } as const;
+    await tx.$executeRaw`
+      UPDATE deliveries
+      SET status = 'pending', attempts_base = attempts, next_attempt_at = now(),
+          lease_until = NULL, dead_reason = NULL, updated_at = now()
+      WHERE id = ${id}::uuid
+    `;
+    return { status: 'requeued' } as const;
+  });
+}

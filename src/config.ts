@@ -101,6 +101,10 @@ const booleanString = z.enum(['true', 'false']).transform((v) => v === 'true');
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
+  DATABASE_SCHEMA: z
+    .string()
+    .regex(/^[a-z_][a-z0-9_]{0,62}$/, 'must be a lower-case PostgreSQL identifier')
+    .optional(),
   ADMIN_API_KEY: z.string().min(16, 'must be at least 16 characters'),
   RELAY_SIGNING_SECRET: z.string().min(16, 'must be at least 16 characters'),
   PORT: z.coerce.number().int().min(0).max(65535).default(3000),
@@ -117,6 +121,8 @@ const envSchema = z.object({
 
 export interface EnvConfig {
   databaseUrl: string;
+  /** Schema holding HookRelay's tables; the connection's default (usually public) when unset. */
+  databaseSchema: string | undefined;
   adminApiKey: string;
   relaySigningSecret: string;
   port: number;
@@ -153,6 +159,7 @@ export function parseEnv(env: Environment): EnvConfig {
   const e = result.data;
   return {
     databaseUrl: e.DATABASE_URL,
+    databaseSchema: e.DATABASE_SCHEMA,
     adminApiKey: e.ADMIN_API_KEY,
     relaySigningSecret: e.RELAY_SIGNING_SECRET,
     port: e.PORT,
