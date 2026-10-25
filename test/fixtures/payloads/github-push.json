@@ -1,0 +1,6 @@
+{
+  "ref": "refs/heads/main",
+  "repository": { "full_name": "example-org/example-repo", "private": false },
+  "pusher": { "name": "example-user" },
+  "commits": [{ "id": "0000000000000000000000000000000000000001", "message": "Fix typo" }]
+}
