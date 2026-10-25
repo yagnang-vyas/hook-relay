@@ -45,6 +45,7 @@ export interface TestConfigOptions {
   retentionDays?: number;
   leaseSeconds?: number;
   maxAttempts?: number;
+  timeoutMs?: number;
   backoff?: { baseMs: number; maxMs: number };
   allowPrivateTargets?: string[];
   allowHttp?: boolean;
@@ -60,13 +61,14 @@ export function testConfig(options: TestConfigOptions = {}): Config {
     RELAY_SIGNING_SECRET: TEST_SECRETS.relay,
     LEASE_SECONDS: String(leaseSeconds),
     LOG_LEVEL: 'silent',
+    WORKER_POLL_INTERVAL_MS: '20',
     WORKER_BATCH_SIZE: String(options.workerBatchSize ?? 10),
     MIGRATIONS_DIR: 'prisma/migrations',
   });
   const target = (id: string, url: string) => ({
     id,
     url,
-    timeoutMs: 2_000,
+    timeoutMs: options.timeoutMs ?? 2_000,
     maxAttempts: options.maxAttempts ?? 3,
     backoff: options.backoff ?? { baseMs: 10, maxMs: 100 },
   });

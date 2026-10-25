@@ -114,3 +114,44 @@ justification. The most conservative reading was taken in each case.
   that the migrations and `schema.prisma` agree.
 - **Prisma client.** The generator output (`src/generated/prisma`) is git-ignored and produced by
   `prisma generate` (`postinstall` and `npm run build`). Prisma shares the application's `pg` pool.
+
+### Delivery worker
+
+- **Claiming.** One statement (`UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED)`) moves due
+  deliveries to `in_flight`, sets `lease_until` and increments `attempts`, and commits before any
+  HTTP call. Incrementing at claim time means a worker that crashes mid-request still consumes an
+  attempt, so a delivery that kills its worker cannot loop forever.
+- **Fenced completion.** The outcome is applied with `WHERE status = 'in_flight' AND attempts = <claimed>`.
+  If the lease expired and the delivery was recovered or re-claimed, the stale result is discarded
+  (and logged) rather than overwriting the newer attempt. The attempt row is still written
+  (`ON CONFLICT DO NOTHING`) so the history shows what happened.
+- **Lease recovery** runs inside every worker (at most once per 5 seconds). Recovery counts as a used
+  attempt: if the budget is spent the delivery becomes `dead`, otherwise `retrying` and immediately
+  due. Deliveries for targets removed from the configuration become `dead` (`unknown_target`).
+- **Outcome classification.** 2xx delivers. 4xx other than 408 and 429 is permanent. Everything else
+  (3xx, 5xx, 408, 429, timeouts, network and DNS errors, SSRF rejections) is retried. Redirects are
+  never followed, so a 3xx is retried like any other unexpected status.
+- **Backoff.** Full jitter: a uniform delay in `[0, min(maxMs, baseMs * 2^(n-1))]` where `n` is the
+  attempt number within the current retry budget. Exponent growth is clamped so large attempt counts
+  cannot overflow.
+- **SSRF.** Targets come from configuration only. Before each request the hostname is resolved and
+  every address is classified; additionally the HTTP client's connector re-validates the address it
+  is about to dial, which closes the DNS-rebinding window between check and connect. Blocked:
+  unspecified and "this network", loopback, RFC 1918, link-local (including `169.254.169.254`),
+  CGNAT, benchmarking, documentation, multicast and reserved IPv4; and for IPv6 unspecified, loopback,
+  unique-local, link-local, site-local, multicast, documentation, discard, Teredo and IPv4-compatible
+  ranges. Addresses that embed IPv4 (IPv4-mapped, NAT64 and 6to4) are judged by the embedded address.
+  `allowPrivateTargets` exempts a hostname entirely, so list only hosts you control.
+- **HTTP client.** `undici` is used directly (not the global `fetch`) because only it lets us supply
+  the guarded connector. Following the WHATWG fetch rules it refuses a few "bad ports" (for example
+  6000 and 6667); such targets fail as retryable errors and end up dead-lettered.
+- **What is stored about an attempt:** status code, duration, and a short error string such as
+  `request timed out` or `network error: ECONNREFUSED`. Response bodies, URLs and exception messages
+  from the HTTP client are never stored.
+- **Forwarded request.** `POST` with the original bytes and content type (default
+  `application/octet-stream`), plus `X-HookRelay-Event-Id`, `X-HookRelay-Delivery-Id`,
+  `X-HookRelay-Attempt` (lifetime attempt number) and `X-HookRelay-Signature`
+  (`sha256=<hex HMAC of the body with RELAY_SIGNING_SECRET>`). Original provider headers are not
+  forwarded.
+- **Shutdown.** The worker stops claiming, waits up to the grace period for in-flight requests, then
+  aborts them; aborted requests are recorded as retryable failures.

@@ -6,7 +6,10 @@ import { createApp } from '../../src/app.js';
 import type { Config } from '../../src/config.js';
 import { createReadiness } from '../../src/db.js';
 import { applyMigrations } from '../../src/migrate.js';
+import { createForwarder, type Forwarder } from '../../src/delivery/forward.js';
+import { Worker } from '../../src/delivery/worker.js';
 import { Metrics } from '../../src/metrics.js';
+import { persistEvent } from '../../src/store/events.js';
 import { createPrisma, type Db } from '../../src/prisma.js';
 import {
   captureLogger,
@@ -95,4 +98,75 @@ export function createTestApp(
     ...(options.now !== undefined ? { now: options.now } : {}),
   });
   return { app, config, metrics, logs };
+}
+
+export interface SeedOptions {
+  sourceId?: string;
+  deliveryId?: string;
+  body?: Buffer | string;
+  contentType?: string | null;
+  targetIds?: string[];
+}
+
+/** Stores an event with pending deliveries exactly as the ingest route would. */
+export async function seedEvent(db: Db, options: SeedOptions = {}): Promise<string> {
+  const result = await persistEvent(db, {
+    sourceId: options.sourceId ?? 'github',
+    deliveryId: options.deliveryId ?? `seed-${randomBytes(6).toString('hex')}`,
+    generatedId: false,
+    headers: {},
+    contentType: options.contentType === undefined ? 'application/json' : options.contentType,
+    body: Buffer.from(options.body ?? '{"seed":true}'),
+    targetIds: options.targetIds ?? ['orders'],
+  });
+  if (result.status !== 'accepted') throw new Error('seed produced a duplicate');
+  return result.eventId;
+}
+
+/** Makes every queued delivery due now, skipping the backoff wait. */
+export async function makeDue(pool: pg.Pool): Promise<void> {
+  await pool.query(
+    `UPDATE deliveries SET next_attempt_at = now() WHERE status IN ('pending', 'retrying')`,
+  );
+}
+
+export interface WorkerContext {
+  worker: Worker;
+  forwarder: Forwarder;
+  config: Config;
+  logs: CapturedLogger;
+  metrics: Metrics;
+}
+
+export function createTestWorker(
+  testDb: Pick<TestDb, 'db'>,
+  options: TestConfigOptions & {
+    random?: () => number;
+    blockPrivate?: boolean;
+    leaseSweepIntervalMs?: number;
+    forwarder?: Forwarder;
+  } = {},
+): WorkerContext {
+  const config = testConfig({
+    ...options,
+    ...(options.blockPrivate === true ? { allowPrivateTargets: [] } : {}),
+  });
+  const logs = captureLogger();
+  const metrics = new Metrics();
+  const forwarder =
+    options.forwarder ??
+    createForwarder({
+      network: config.relay.network,
+      relaySigningSecret: config.env.relaySigningSecret,
+    });
+  const worker = new Worker({
+    db: testDb.db,
+    config,
+    forwarder,
+    logger: logs.logger,
+    metrics,
+    ...(options.random !== undefined ? { random: options.random } : {}),
+    leaseSweepIntervalMs: options.leaseSweepIntervalMs ?? 0,
+  });
+  return { worker, forwarder, config, logs, metrics };
 }

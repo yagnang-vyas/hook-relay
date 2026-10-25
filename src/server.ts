@@ -1,9 +1,13 @@
+import type { Server } from 'node:http';
 import { createApp } from './app.js';
-import { loadConfig, ConfigError } from './config.js';
+import { ConfigError, loadConfig } from './config.js';
 import { createPool, createReadiness } from './db.js';
+import { createForwarder } from './delivery/forward.js';
+import { Worker } from './delivery/worker.js';
 import { createLogger } from './logger.js';
 import { Metrics } from './metrics.js';
 import { createPrisma } from './prisma.js';
+import { installShutdown, type ShutdownStep } from './shutdown.js';
 
 function main(): void {
   let config;
@@ -16,18 +20,52 @@ function main(): void {
   }
 
   const logger = createLogger(config.env.logLevel);
+  const metrics = new Metrics();
   const pool = createPool(config.env.databaseUrl);
+  const db = createPrisma(pool);
   const app = createApp({
     config,
     logger,
-    metrics: new Metrics(),
+    metrics,
     readiness: createReadiness(pool, config.env.migrationsDir),
-    db: createPrisma(pool),
+    db,
   });
 
-  app.listen(config.env.port, config.env.host, () => {
+  const server: Server = app.listen(config.env.port, config.env.host, () => {
     logger.info({ port: config.env.port }, 'hook-relay listening');
   });
+
+  const forwarder = createForwarder({
+    network: config.relay.network,
+    relaySigningSecret: config.env.relaySigningSecret,
+  });
+  const worker = config.env.workerEnabled
+    ? new Worker({ db, config, forwarder, logger, metrics })
+    : undefined;
+  worker?.start();
+
+  const steps: ShutdownStep[] = [
+    {
+      name: 'http-server',
+      run: () =>
+        new Promise<void>((resolve) => {
+          server.close(() => {
+            resolve();
+          });
+          // Keep-alive sockets would otherwise hold close() open until they time out.
+          server.closeIdleConnections();
+        }),
+    },
+  ];
+  if (worker !== undefined) {
+    steps.push({ name: 'worker', run: (graceMs) => worker.stop(graceMs) });
+  }
+  steps.push(
+    { name: 'forwarder', run: () => forwarder.close() },
+    { name: 'database', run: () => db.$disconnect() },
+    { name: 'pool', run: () => pool.end() },
+  );
+  installShutdown({ logger, graceMs: config.env.shutdownGraceMs, steps });
 }
 
 main();
