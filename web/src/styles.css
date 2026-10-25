@@ -1,0 +1,107 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #f1f3f6;
+  --border: #dde1e7;
+  --fg: #11151c;
+  --muted: #5b6575;
+  --accent: #1d6fdc;
+  --accent-fg: #ffffff;
+  --success: #17703a;
+  --success-bg: #e3f4ea;
+  --warn: #8a5a00;
+  --warn-bg: #fbf0d8;
+  --danger: #b4261f;
+  --danger-bg: #fbe6e4;
+  --info: #1d5fb4;
+  --info-bg: #e2edfb;
+  --sim: #6b3fc4;
+  --sim-bg: #efe8fb;
+  --sidebar: #0d1117;
+  --sidebar-fg: #c9d1d9;
+  --sidebar-active: #1c2430;
+}
+
+.dark {
+  --bg: #0b0e13;
+  --panel: #121720;
+  --panel-2: #181e29;
+  --border: #262e3b;
+  --fg: #e6eaf0;
+  --muted: #94a0b2;
+  --accent: #58a6ff;
+  --accent-fg: #0b0e13;
+  --success: #5fd08a;
+  --success-bg: #12301f;
+  --warn: #f0b84a;
+  --warn-bg: #36290c;
+  --danger: #ff8a82;
+  --danger-bg: #3a1614;
+  --info: #7db8ff;
+  --info-bg: #14263f;
+  --sim: #b99bff;
+  --sim-bg: #2a1d4a;
+  --sidebar: #080b10;
+  --sidebar-active: #161d28;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel2: var(--panel-2);
+  --color-line: var(--border);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accentfg: var(--accent-fg);
+  --color-success: var(--success);
+  --color-successbg: var(--success-bg);
+  --color-warn: var(--warn);
+  --color-warnbg: var(--warn-bg);
+  --color-danger: var(--danger);
+  --color-dangerbg: var(--danger-bg);
+  --color-info: var(--info);
+  --color-infobg: var(--info-bg);
+  --color-sim: var(--sim);
+  --color-simbg: var(--sim-bg);
+  --color-sidebar: var(--sidebar);
+  --color-sidebarfg: var(--sidebar-fg);
+  --color-sidebaractive: var(--sidebar-active);
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

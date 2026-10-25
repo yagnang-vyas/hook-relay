@@ -10,6 +10,9 @@ First release.
 
 ### Added
 
+- Optional web console in `web/`: an operations dashboard over the existing admin API and a
+  browser-only playground that simulates signatures, retries, duplicates and dead letters. Adds an
+  opt-in `ui` Compose profile and a `web` CI job; the service itself is unchanged.
 - Webhook ingestion at `POST /hooks/:sourceId` with HMAC-SHA256 verification (`sha256=hex`, `hex`,
   `base64`) and Stripe-style timestamped signatures with tolerance, multiple `v1` values and secret
   rotation, always over the raw body bytes.

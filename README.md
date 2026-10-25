@@ -235,6 +235,20 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H 'Content-Type: appl
 - **Logs** are JSON lines on stdout with a request ID on every line (`X-Request-Id` is honoured if
   well-formed, otherwise generated, and returned on every response).
 
+## Web console and playground (optional)
+
+`web/` holds a standalone React app with two parts. The **dashboard** reads your running instance
+through the existing admin API (overview, events and delivery attempts, dead letter queue, replay and
+retry, health). The **playground** is a local simulation of signatures, retries, duplicates and
+dead letters that needs no server and no key. HookRelay itself is unchanged and runs exactly as before
+without it. See [web/README.md](web/README.md).
+
+```bash
+docker compose --profile ui up --build web   # then open http://127.0.0.1:5173
+```
+
+Enter your `ADMIN_API_KEY` on the Connection page; it stays in browser memory only.
+
 ## Limitations
 
 - At-least-once only; there is no exactly-once mode and no ordering guarantee.
@@ -248,7 +262,7 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H 'Content-Type: appl
 - Targets are fixed in the config file; changing them needs a restart.
 - Forwarding does not copy provider headers (only the content type and `X-HookRelay-*`).
 - The WHATWG "bad ports" list applies to targets (for example 6000 and 6667 cannot be used).
-- No web UI.
+- The optional web console (`web/`) is a thin client of the admin API: it adds no endpoints, no roles and no history beyond what the API returns.
 
 ## Roadmap
 
@@ -270,6 +284,8 @@ npm run test:integration    # each test file creates and drops its own schema
 npm run test:coverage       # everything, with coverage thresholds
 npx prisma migrate dev      # after editing prisma/schema.prisma
 ```
+
+The console has its own checks: `cd web && npm ci && npm run check`.
 
 Coverage thresholds are 85% overall and 95% for `src/signatures` and `src/delivery`. See
 [SPEC.md](SPEC.md) for behaviour and design decisions, [AGENTS.md](AGENTS.md) for contributor and
