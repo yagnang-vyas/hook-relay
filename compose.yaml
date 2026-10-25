@@ -62,5 +62,23 @@ services:
     cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']
 
+  # Optional demo downstream service: `docker compose --profile demo up`.
+  echo:
+    profiles: ['demo']
+    image: hook-relay:local
+    init: true
+    command: ['node', '/app/examples/echo-target.mjs']
+    environment:
+      RELAY_SIGNING_SECRET: ${RELAY_SIGNING_SECRET:?set RELAY_SIGNING_SECRET in .env}
+      ECHO_FAIL_FIRST: '1'
+    volumes:
+      - ./examples/echo-target.mjs:/app/examples/echo-target.mjs:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
